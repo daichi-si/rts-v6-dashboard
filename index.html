@@ -210,6 +210,13 @@
 
   <!-- ===== 記録 ===== -->
   <div class="view" id="view-record">
+    <div class="section-title">スクショから記録(自動読み取り)</div>
+    <div class="sig-card">
+      <div class="muted" style="margin-bottom:8px;">IGの約定通知スクショを選ぶと、AIが内容を読み取って下のフォームに自動入力します。内容を確認してから記録してください。</div>
+      <input type="file" id="shotFile" accept="image/*" style="color:var(--text-dim); font-size:13px;">
+      <div id="shotStatus" class="muted" style="margin-top:8px;"></div>
+    </div>
+
     <div class="section-title">発注を記録</div>
     <div class="sig-card">
       <div class="field"><label>銘柄ID</label><input id="reSymbol" placeholder="GOLD / US500 / USDJPY ..."></div>
@@ -264,7 +271,7 @@
 <script>
   // ============================================================
   // ▼▼▼ デプロイ済みWebApp URL ▼▼▼
-  const API_URL = "https://script.google.com/macros/s/AKfycbwFMMHuhM7cVXwx2q_l7J-gio83BabE_zeigGyQFkPhxCzLa1ccZIb5KpTEzLrCgPX3iA/exec";
+  const API_URL = "https://script.google.com/macros/s/AKfycbxeCH1jy_CSAIsoEBx3NVBMNSR5MJLfBJCQNy6irA_2ezRdRcWkIQ6YMbjpX3ieJQmFMQ/exec";
   // ▲▲▲ 更新時はGAS側を再デプロイ(URL不変なら変更不要) ▲▲▲
   // ============================================================
 
@@ -395,6 +402,69 @@
           <div class="sig-meta"><span>entry ${t.entryPrice}</span><span>lot ${t.lot}</span>
           <span>SL ${t.planSL}</span><span>TP ${t.planTP}</span></div>
         </div>`).join("");
+    }
+  }
+
+  // ---- Screenshot parse ----
+  document.getElementById("shotFile").addEventListener("change", async function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const status = document.getElementById("shotStatus");
+    status.textContent = "画像を読み取り中...(数秒)";
+    try {
+      const base64 = await fileToBase64(file);
+      const mediaType = file.type || "image/png";
+      const r = await apiPost({ action:"parseScreenshot", image: base64, mediaType: mediaType });
+      if (!r.ok || !r.parsed) {
+        status.innerHTML = '<span style="color:var(--short)">読み取り失敗: ' + (r.error||"不明") + '</span>';
+        return;
+      }
+      applyParsedToForm(r.parsed, status);
+    } catch (err) {
+      status.innerHTML = '<span style="color:var(--short)">エラー: ' + err.message + '</span>';
+    }
+    e.target.value = ""; // 同じファイルを再選択できるようにリセット
+  });
+
+  function fileToBase64(file) {
+    return new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result.split(",")[1]); // data:プレフィックス除去
+      r.onerror = rej;
+      r.readAsDataURL(file);
+    });
+  }
+
+  function applyParsedToForm(p, status) {
+    const conf = p.confidence || "?";
+    const confColor = conf==="high" ? "var(--long)" : (conf==="low" ? "var(--short)" : "var(--warn)");
+    let msg = '読み取り結果: <b>' + (p.matchedIgName || p.rawName || "?") + '</b> / ' +
+      (p.action==="CLOSE"?"決済":"新規") + ' / ' + (p.direction||"?") + ' / lot ' + (p.lot||"?") +
+      ' / レート ' + (p.rate||"?") + ' / ' + (p.currency||"?") +
+      ' <span style="color:'+confColor+'">[自信度 '+conf+']</span>';
+    if (p.isDemo) msg += ' <span style="color:var(--warn)">(デモ)</span>';
+    status.innerHTML = msg + '<br><span class="muted">下のフォームに反映しました。確認して記録してください。</span>';
+
+    if (p.action === "CLOSE") {
+      // 決済フォームへ。建玉プルダウンから銘柄一致を探す
+      loadTrades().then(() => {
+        const sel = document.getElementById("rxTradeId");
+        if (p.symbolId) {
+          for (let o of sel.options) {
+            if (o.text.indexOf(p.matchedIgName||"") >= 0) { sel.value = o.value; break; }
+          }
+        }
+        if (p.rate) document.getElementById("rxClose").value = p.rate;
+      });
+      // 決済セクションへスクロール
+      document.querySelector("#view-record .section-title:nth-of-type(3)")?.scrollIntoView({behavior:"smooth"});
+    } else {
+      // 新規 → エントリーフォーム
+      if (p.symbolId) document.getElementById("reSymbol").value = p.symbolId;
+      if (p.direction) document.getElementById("reDir").value = p.direction;
+      if (p.lot) document.getElementById("reLot").value = p.lot;
+      if (p.rate) document.getElementById("reEntry").value = p.rate;
+      // SL/TPは約定通知に無いので手入力(空のまま)
     }
   }
 
