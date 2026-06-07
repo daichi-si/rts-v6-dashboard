@@ -87,6 +87,17 @@
   .sig-reason { margin-top:6px; font-size:12px; color:var(--text-dim); }
   .tier-STRONG_ONLY { color:var(--warn); }
   .score-pill { font-family:var(--mono); font-size:11px; color:var(--accent); }
+  /* 3軸スコア */
+  .score-axes { display:flex; gap:0; margin:8px 0; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+  .axis { flex:1; padding:6px 8px; text-align:center; border-right:1px solid var(--border); }
+  .axis:last-child { border-right:none; }
+  .axis-l { font-size:9px; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.05em; }
+  .axis-v { font-family:var(--mono); font-size:18px; font-weight:600; margin-top:2px; }
+  .ai-axis { color:var(--accent); }
+  .comb-axis { color:var(--warn); }
+  .ai-opinion-box { background:var(--surface-2); border:1px solid var(--border); border-radius:6px; padding:10px; margin-top:8px; font-size:12px; line-height:1.5; }
+  .ai-opinion-news, .ai-opinion-reason { margin-top:4px; color:var(--text-dim); }
+  .ai-opinion-news b, .ai-opinion-reason b { color:var(--text); }
 
   /* ===== Regime monitor ===== */
   .regime-counts { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
@@ -259,6 +270,17 @@
     <div id="aiReviewBody" class="ai-box muted">「月次レビュー実行」を押すと、直近トレードの分析を表示します。</div>
     <div class="section-title">設定推奨</div>
     <div id="aiSuggestBody" class="muted">「設定推奨を取得」を押すと、推奨設定を表示します(30トレード未満は蓄積中)。</div>
+
+    <div class="section-title">戦略レビュー(全体)</div>
+    <button class="act ghost" onclick="runStrategyReview()">戦略全体をAIに批評させる</button>
+    <div id="aiStrategyBody" class="ai-box muted" style="margin-top:8px;">システムの設計・現在のレジーム分布・実績を見て、戦略の妥当性をAIが批評します。</div>
+
+    <div class="section-title">銘柄別ロジック評価</div>
+    <div class="row2">
+      <input id="evalSymbol" placeholder="銘柄ID (GOLD / US500 ...)" style="background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px 10px;font-family:var(--mono);font-size:13px;">
+      <button class="act ghost" onclick="runSymbolEval()">この銘柄を評価</button>
+    </div>
+    <div id="aiSymbolBody" class="ai-box muted" style="margin-top:8px;">銘柄の値動き特性に対し、現在のパラメータが合っているかをAIが評価します。</div>
   </div>
 
   <!-- ===== 設定 ===== -->
@@ -271,7 +293,7 @@
 <script>
   // ============================================================
   // ▼▼▼ デプロイ済みWebApp URL ▼▼▼
-  const API_URL = "https://script.google.com/macros/s/AKfycbxeCH1jy_CSAIsoEBx3NVBMNSR5MJLfBJCQNy6irA_2ezRdRcWkIQ6YMbjpX3ieJQmFMQ/exec";
+  const API_URL = "https://script.google.com/macros/s/AKfycbw5dcOG77xUQBVcE__H168DYf9DAKQDEuSt1CSe5hMXUu5Oa99eMMJQMkfGTSalRNMj/exec";
   // ▲▲▲ 更新時はGAS側を再デプロイ(URL不変なら変更不要) ▲▲▲
   // ============================================================
 
@@ -316,6 +338,7 @@
   // ---- Load: health + stats ----
   async function loadHeader() {
     const h = await apiGet("health");
+    if (h.aiScoreWeight != null) aiWeight = h.aiScoreWeight;
     const ks = document.getElementById("ksBadge");
     ks.textContent = h.killSwitch + (h.riskPct!=null ? "  risk " + h.riskPct + "%" : "");
     ks.className = "ks-badge ks-" + h.killSwitch;
@@ -343,12 +366,16 @@
       body.innerHTML = '<div class="empty">現在エントリー承認シグナルはありません。<br>' +
         '明確なトレンド + 押し目 + 反転確認が揃った時のみ表示されます。</div>';
     } else {
-      body.innerHTML = d.signals.map(s => `
-        <div class="sig-card">
+      body.innerHTML = d.signals.map((s,idx) => `
+        <div class="sig-card" id="sigcard-${idx}">
           <div class="sig-head">
-            <div class="sig-name">${s.igName}
-              <span class="score-pill">score ${s.score}</span></div>
+            <div class="sig-name">${s.igName}</div>
             <div class="sig-dir dir-${s.direction}">${s.direction}</div>
+          </div>
+          <div class="score-axes">
+            <div class="axis"><div class="axis-l">ロジック</div><div class="axis-v">${s.score}</div></div>
+            <div class="axis"><div class="axis-l">AI</div><div class="axis-v ai-axis" id="aiscore-${idx}">—</div></div>
+            <div class="axis"><div class="axis-l">合算</div><div class="axis-v comb-axis" id="comb-${idx}">—</div></div>
           </div>
           <div class="sig-grid">
             <div class="sig-cell"><div class="sig-cell-l">Entry</div><div class="sig-cell-v">${s.entryRef}</div></div>
@@ -364,9 +391,33 @@
             <span>${s.regime}</span>
           </div>
           <div class="sig-reason">${s.reason}</div>
+          <button class="refresh-btn" style="margin-top:8px;" onclick="getSecondOpinion('${s.symbolId}', ${idx}, ${s.score})">AI意見を取得(Web検索)</button>
+          <div id="aiopinion-${idx}" class="ai-opinion"></div>
         </div>`).join("");
     }
     document.getElementById("signalsUpdated").textContent = "updated: " + (d.updated||"");
+  }
+
+  // ---- AI二次意見(シグナルカード内) ----
+  let aiWeight = 0.3;
+  async function getSecondOpinion(symbolId, idx, logicScore) {
+    const op = document.getElementById("aiopinion-" + idx);
+    op.innerHTML = '<div class="muted" style="margin-top:8px;">Web検索して分析中...(10秒前後)</div>';
+    const r = await apiPost({ action:"secondOpinion", symbolId: symbolId });
+    if (!r.ok) { op.innerHTML = '<div class="muted">取得失敗: '+(r.error||"")+'</div>'; return; }
+    const aiScore = r.aiScore != null ? r.aiScore : 50;
+    const comb = Math.round(logicScore*(1-aiWeight) + aiScore*aiWeight);
+    // 3軸を更新
+    document.getElementById("aiscore-"+idx).textContent = aiScore;
+    document.getElementById("comb-"+idx).textContent = comb;
+    const stanceColor = r.stance==="支持"?"var(--long)":(r.stance==="慎重"?"var(--short)":"var(--text-dim)");
+    op.innerHTML = `
+      <div class="ai-opinion-box">
+        <div style="margin-bottom:4px;"><span style="color:${stanceColor};font-weight:600;">${r.stance||"中立"}</span>
+          <span class="muted"> AIスコア ${aiScore}</span></div>
+        <div class="ai-opinion-news"><b>関連ニュース:</b> ${r.newsSummary||"—"}</div>
+        <div class="ai-opinion-reason"><b>評価根拠:</b> ${r.reason||"—"}</div>
+      </div>`;
   }
 
   // ---- Load: regimes ----
@@ -500,6 +551,22 @@
     const r = await apiPost(body);
     if (r.ok) { alert("決済記録: P/L " + yen(r.pnlYen) + " (R=" + r.rMultiple + ")"); loadTrades(); loadHeader(); }
     else showErr("失敗: " + (r.error||"不明"));
+  }
+
+  // ---- AI: 戦略レビュー・銘柄評価 ----
+  async function runStrategyReview() {
+    const b = document.getElementById("aiStrategyBody");
+    b.textContent = "分析中...(Web検索なし、10秒前後)";
+    const r = await apiPost({action:"reviewStrategy"});
+    b.textContent = r.analysis || r.error || "応答なし";
+  }
+  async function runSymbolEval() {
+    const id = document.getElementById("evalSymbol").value.trim().toUpperCase();
+    if (!id) { showErr("銘柄IDを入力してください"); return; }
+    const b = document.getElementById("aiSymbolBody");
+    b.textContent = id + " を分析中...";
+    const r = await apiPost({action:"evaluateSymbol", symbolId:id});
+    b.textContent = r.analysis || r.error || "応答なし";
   }
 
   // ---- AI ----
